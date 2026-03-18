@@ -1,6 +1,8 @@
 require('dotenv').config();
 const mongoose = require('mongoose');
 const Product = require('./models/Product');
+const User = require('./models/User'); // Import User model
+const bcrypt = require('bcryptjs');
 
 const seedProducts = [
   {
@@ -62,6 +64,21 @@ const seedDB = async () => {
     // Insert seed data
     await Product.insertMany(seedProducts);
     console.log('Database seeded successfully!');
+
+    // Create Admin User
+    await User.deleteMany({ email: 'admin@tehilalevi.com' }); // Prevent duplicates
+    
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash('admin123', salt); // Default password: admin123
+
+    const adminUser = new User({
+      email: 'admin@tehilalevi.com',
+      password: hashedPassword,
+      role: 'admin'
+    });
+
+    await adminUser.save();
+    console.log('Admin user created: admin@tehilalevi.com / admin123');
 
     mongoose.connection.close();
   } catch (error) {

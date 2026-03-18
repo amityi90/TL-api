@@ -20,17 +20,15 @@ const orderSchema = new mongoose.Schema({
     postalCode: { type: String, required: true },
     phone: { type: String, required: true }
   },
+  deliveryInfo: {
+    carrier: { type: String },
+    trackingNumber: { type: String },
+    arrivalDate: { type: String },
+    arrivalTime: { type: String }
+  },
   paymentInfo: {
-    method: { 
-      type: String, 
-      enum: ['Card', 'PayPal'], 
-      required: true 
-    },
-    status: { 
-      type: String, 
-      enum: ['Pending', 'Paid'], 
-      default: 'Pending' 
-    }
+    method: { type: String, enum: ['Card', 'PayPal'], required: true },
+    status: { type: String, enum: ['Pending', 'Paid'], default: 'Pending' }
   },
   totalAmount: {
     type: Number,
@@ -38,8 +36,8 @@ const orderSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['Processing', 'Shipped', 'Delivered'],
-    default: 'Processing'
+    enum: ['should be delivered', 'delivered', 'arrived', 'archived'],
+    default: 'should be delivered'
   },
   createdAt: {
     type: Date,
