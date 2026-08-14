@@ -1,11 +1,12 @@
 {
   "name": "tl-api",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "TL Shop API",
+  "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
+    "migrate": "node db/migrate.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -13,13 +14,14 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@google-cloud/cloud-sql-connector": "^1.9.0",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
     "joi": "^18.0.2",
     "jsonwebtoken": "^9.0.3",
-    "mongoose": "^9.2.3",
+    "pg": "^8.13.1",
     "stripe": "^20.4.0"
   },
   "devDependencies": {
