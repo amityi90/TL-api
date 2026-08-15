@@ -26,7 +26,6 @@ const orderValidationSchema = Joi.object({
     .unknown(true)
     .required(),
   paymentMethod: Joi.string().valid('Card', 'PayPal').required(),
-  paymentIntentId: Joi.string().optional(),
   total: Joi.number().optional()
 });
 
@@ -41,7 +40,9 @@ exports.createOrder = async (req, res, next) => {
       return res.status(400).json({ success: false, message: error.details[0].message });
     }
 
-    const { cartItems, shippingAddress, paymentMethod, paymentIntentId } = value;
+    // The payment intent is created afterwards, from this order's own total -
+    // which is why the browser never gets to say what the charge should be.
+    const { cartItems, shippingAddress, paymentMethod } = value;
 
     const quantityByProductId = new Map();
     for (const item of cartItems) {
@@ -98,8 +99,8 @@ exports.createOrder = async (req, res, next) => {
 
       const { rows: orderRows } = await client.query(
         `INSERT INTO orders (full_name, address, city, postal_code, phone, email,
-                             payment_method, payment_intent_id, total_amount)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                             payment_method, total_amount)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING id`,
         [
           shippingAddress.fullName,
@@ -109,7 +110,6 @@ exports.createOrder = async (req, res, next) => {
           shippingAddress.phone,
           shippingAddress.email || null,
           paymentMethod,
-          paymentIntentId || null,
           totalAmount
         ]
       );

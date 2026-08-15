@@ -8,6 +8,7 @@ const orderRoutes = require('./routes/orderRoutes');
 const contactRoutes = require('./routes/contactRoutes');
 const contentRoutes = require('./routes/contentRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
+const paymentController = require('./controllers/paymentController');
 const adminRoutes = require('./routes/adminRoutes');
 const authRoutes = require('./routes/authRoutes');
 
@@ -41,6 +42,14 @@ app.use(
     }
   })
 );
+// MUST come before express.json(). Stripe signs the raw bytes, and the JSON
+// parser replaces them with a parsed object, so verification would always fail.
+app.post(
+  '/api/payments/webhook',
+  express.raw({ type: 'application/json' }),
+  paymentController.handleWebhook
+);
+
 app.use(express.json({ limit: '100kb' }));
 
 app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
