@@ -1,8 +1,20 @@
 const Joi = require('joi');
+const multer = require('multer');
+const { randomUUID } = require('crypto');
 const { query } = require('../db');
 const { PRODUCT_COLUMNS, ORDER_COLUMNS, ORDER_ITEMS_JSON } = require('../db/projections');
+const storage = require('../services/storage');
 
 const CATEGORIES = ['Rings', 'Necklaces', 'Earrings', 'Bracelets', 'Watches', 'Other'];
+
+const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+const MAX_FILES_PER_UPLOAD = 8;
+const EXT_BY_MIME = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+  'image/gif': 'gif'
+};
 
 const productSchema = Joi.object({
   name: Joi.string().trim().min(1).max(200).required(),
@@ -17,6 +29,61 @@ const productSchema = Joi.object({
 const parseId = (raw) => {
   const id = Number(raw);
   return Number.isInteger(id) ? id : null;
+};
+
+// --- Image Upload ---
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_UPLOAD_BYTES }
+}).array('files', MAX_FILES_PER_UPLOAD);
+
+// multer runs inside the handler rather than as route middleware so its errors
+// can be mapped to meaningful status codes instead of falling through as 500s.
+exports.uploadImages = (req, res, next) => {
+  upload(req, res, async (err) => {
+    if (err) {
+      if (err instanceof multer.MulterError) {
+        if (err.code === 'LIMIT_FILE_SIZE') {
+          return res.status(413).json({ success: false, message: 'Image too large (max 5 MB)' });
+        }
+        if (err.code === 'LIMIT_UNEXPECTED_FILE') {
+          return res.status(400).json({
+            success: false,
+            message: `Too many files (max ${MAX_FILES_PER_UPLOAD})`
+          });
+        }
+      }
+      return res.status(400).json({ success: false, message: 'Invalid upload' });
+    }
+
+    const files = req.files || [];
+    if (files.length === 0) {
+      return res.status(400).json({ success: false, message: 'No file provided' });
+    }
+
+    for (const file of files) {
+      if (!EXT_BY_MIME[file.mimetype]) {
+        return res.status(400).json({
+          success: false,
+          message: 'Unsupported image type (use JPEG, PNG, WebP or GIF)'
+        });
+      }
+    }
+
+    try {
+      const urls = await Promise.all(
+        files.map((file) => {
+          // Original filename is discarded: no sanitising to get wrong, no collisions.
+          const key = `products/${randomUUID()}.${EXT_BY_MIME[file.mimetype]}`;
+          return storage.uploadObject(key, file.buffer, file.mimetype);
+        })
+      );
+      res.status(201).json({ success: true, data: { urls } });
+    } catch (error) {
+      next(error);
+    }
+  });
 };
 
 // --- Product Management ---
@@ -97,6 +164,14 @@ exports.updateProduct = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'No fields to update' });
     }
 
+    // Capture the current images before overwriting them, so any that the edit
+    // drops can be removed from the bucket afterwards.
+    let previousImages = [];
+    if (value.images !== undefined) {
+      const { rows: before } = await query('SELECT images FROM products WHERE id = $1', [id]);
+      previousImages = before[0]?.images || [];
+    }
+
     params.push(id);
     const { rows } = await query(
       `UPDATE products SET ${assignments.join(', ')}
@@ -108,6 +183,13 @@ exports.updateProduct = async (req, res, next) => {
     if (rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Product not found' });
     }
+
+    const stillUsed = new Set(rows[0].images || []);
+    const removed = previousImages.filter((url) => !stillUsed.has(url));
+    if (removed.length > 0) {
+      await storage.deleteByUrls(removed);
+    }
+
     res.status(200).json({ success: true, data: rows[0] });
   } catch (error) {
     next(error);
@@ -123,10 +205,14 @@ exports.deleteProduct = async (req, res, next) => {
 
     // order_items.product_id is ON DELETE SET NULL, so historical orders keep
     // their name and unit_price snapshot instead of dangling.
-    const { rows } = await query('DELETE FROM products WHERE id = $1 RETURNING id', [id]);
+    const { rows } = await query('DELETE FROM products WHERE id = $1 RETURNING id, images', [id]);
     if (rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Product not found' });
     }
+
+    // Skips anything we don't own — seeded products point at Unsplash.
+    await storage.deleteByUrls(rows[0].images || []);
+
     res.status(200).json({ success: true, message: 'Product deleted' });
   } catch (error) {
     next(error);

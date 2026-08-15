@@ -6,6 +6,9 @@ const adminAuth = require('../middleware/adminAuth');
 // Apply adminAuth middleware to all routes
 router.use(adminAuth);
 
+// Image Upload
+router.post('/uploads', adminController.uploadImages);
+
 // Product Management
 router.post('/products', adminController.createProduct);
 router.get('/products', adminController.getAllProducts);
