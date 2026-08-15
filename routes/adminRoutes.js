@@ -9,6 +9,10 @@ router.use(adminAuth);
 // Image Upload
 router.post('/uploads', adminController.uploadImages);
 
+// Site Content (UI Edit)
+router.get('/content', adminController.getSiteContent);
+router.put('/content', adminController.updateSiteContent);
+
 // Product Management
 router.post('/products', adminController.createProduct);
 router.get('/products', adminController.getAllProducts);

@@ -66,6 +66,24 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Editable storefront copy and section imagery. `name` is the lookup key the
+-- frontend uses; `text` is the value (an image URL for type = 'image'). The
+-- remaining columns are presentation metadata for the admin UI's grouping, and
+-- are never writable through the API.
+CREATE TABLE IF NOT EXISTS site_content (
+  id          SERIAL PRIMARY KEY,
+  name        TEXT UNIQUE NOT NULL,
+  text        TEXT NOT NULL DEFAULT '',
+  type        TEXT NOT NULL DEFAULT 'text'
+                CHECK (type IN ('text','textarea','image')),
+  section     TEXT NOT NULL,
+  group_label TEXT,
+  label       TEXT NOT NULL,
+  sort_order  INTEGER NOT NULL DEFAULT 0,
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE INDEX IF NOT EXISTS order_items_order_id_idx ON order_items (order_id);
+CREATE INDEX IF NOT EXISTS site_content_section_idx ON site_content (section, sort_order);
 CREATE INDEX IF NOT EXISTS orders_status_created_at_idx ON orders (status, created_at DESC);
 CREATE INDEX IF NOT EXISTS products_category_idx ON products (category);

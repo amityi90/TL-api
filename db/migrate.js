@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { initPool, query, closePool } = require('./index');
 const { seed } = require('./seed');
+const { seedContent } = require('./seedContent');
 
 // Runs as a one-off Cloud Run Job inside the VPC. tl-db has no public IP, so a
 // cloud-sql-proxy tunnel from a developer machine cannot reach it.
@@ -18,6 +19,7 @@ const run = async () => {
     console.log('SKIP_SEED=true - not seeding.');
   } else {
     await seed();
+    await seedContent();
   }
 
   const { rows } = await query(

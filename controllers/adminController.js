@@ -1,7 +1,7 @@
 const Joi = require('joi');
 const multer = require('multer');
 const { randomUUID } = require('crypto');
-const { query } = require('../db');
+const { query, withTransaction } = require('../db');
 const { PRODUCT_COLUMNS, ORDER_COLUMNS, ORDER_ITEMS_JSON } = require('../db/projections');
 const storage = require('../services/storage');
 
@@ -29,6 +29,95 @@ const productSchema = Joi.object({
 const parseId = (raw) => {
   const id = Number(raw);
   return Number.isInteger(id) ? id : null;
+};
+
+// --- Site Content ---
+
+const CONTENT_COLUMNS = `
+  id,
+  name,
+  text,
+  type,
+  section,
+  group_label AS "groupLabel",
+  label,
+  sort_order  AS "sortOrder",
+  updated_at  AS "updatedAt"
+`;
+
+const contentUpdateSchema = Joi.object({
+  updates: Joi.array()
+    .items(
+      Joi.object({
+        name: Joi.string().required(),
+        text: Joi.string().allow('').required()
+      })
+    )
+    .min(1)
+    .required()
+});
+
+exports.getSiteContent = async (req, res, next) => {
+  try {
+    const { rows } = await query(
+      `SELECT ${CONTENT_COLUMNS} FROM site_content ORDER BY section, sort_order`
+    );
+    res.status(200).json({ success: true, data: rows });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.updateSiteContent = async (req, res, next) => {
+  try {
+    const { error, value } = contentUpdateSchema.validate(req.body || {}, { stripUnknown: true });
+    if (error) {
+      return res.status(400).json({ success: false, message: error.details[0].message });
+    }
+
+    const names = value.updates.map((u) => u.name);
+    const { rows: existing } = await query(
+      'SELECT name, text, type FROM site_content WHERE name = ANY($1::text[])',
+      [names]
+    );
+
+    // Reject unknown keys outright rather than silently ignoring them - a typo
+    // in the admin should be visible, not a save that appears to succeed.
+    const known = new Map(existing.map((row) => [row.name, row]));
+    const unknown = names.filter((name) => !known.has(name));
+    if (unknown.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Unknown content key(s): ${unknown.join(', ')}`
+      });
+    }
+
+    // Only `text` is writable. Everything else is structural and comes from the seed.
+    await withTransaction(async (client) => {
+      for (const update of value.updates) {
+        await client.query(
+          'UPDATE site_content SET text = $2, updated_at = now() WHERE name = $1',
+          [update.name, update.text]
+        );
+      }
+    });
+
+    // Replaced images are removed from the bucket afterwards; deleteByUrls skips
+    // anything outside our bucket, so the seeded Unsplash URLs pass through.
+    const replaced = value.updates
+      .filter((u) => known.get(u.name).type === 'image' && known.get(u.name).text !== u.text)
+      .map((u) => known.get(u.name).text);
+    if (replaced.length > 0) {
+      await storage.deleteByUrls(replaced);
+    }
+
+    const { rows } = await query(
+      `SELECT ${CONTENT_COLUMNS} FROM site_content ORDER BY section, sort_order`
+    );
+    res.status(200).json({ success: true, data: rows });
+  } catch (error) {
+    next(error);
+  }
 };
 
 // --- Image Upload ---
