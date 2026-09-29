@@ -7,8 +7,14 @@ const storage = require('../services/storage');
 
 const CATEGORIES = ['Rings', 'Necklaces', 'Earrings', 'Bracelets', 'Watches', 'Other'];
 
-const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
 const MAX_FILES_PER_UPLOAD = 8;
+// Cloud Run refuses HTTP/1 request bodies over 32 MiB before they reach the app, so
+// MAX_FILES_PER_UPLOAD files at MAX_UPLOAD_BYTES each would be turned away by the
+// platform with a 413 this handler never got to phrase. Cap the whole request under
+// that, leaving headroom for multipart boundaries and headers.
+const MAX_REQUEST_BYTES = 30 * 1024 * 1024;
+const mb = (bytes) => Math.round(bytes / 1024 / 1024);
 const EXT_BY_MIME = {
   'image/jpeg': 'jpg',
   'image/png': 'png',
@@ -130,11 +136,26 @@ const upload = multer({
 // multer runs inside the handler rather than as route middleware so its errors
 // can be mapped to meaningful status codes instead of falling through as 500s.
 exports.uploadImages = (req, res, next) => {
+  // Checked before multer runs: memoryStorage() buffers the whole body in RAM, so an
+  // oversized upload has to be refused from its header alone rather than after
+  // parsing. A missing or unparseable Content-Length falls through to the per-file
+  // limit below, which still bounds each individual file.
+  const declaredBytes = Number(req.headers['content-length']);
+  if (Number.isFinite(declaredBytes) && declaredBytes > MAX_REQUEST_BYTES) {
+    return res.status(413).json({
+      success: false,
+      message: `Upload too large (max ${mb(MAX_REQUEST_BYTES)} MB per request)`
+    });
+  }
+
   upload(req, res, async (err) => {
     if (err) {
       if (err instanceof multer.MulterError) {
         if (err.code === 'LIMIT_FILE_SIZE') {
-          return res.status(413).json({ success: false, message: 'Image too large (max 5 MB)' });
+          return res.status(413).json({
+            success: false,
+            message: `Image too large (max ${mb(MAX_UPLOAD_BYTES)} MB)`
+          });
         }
         if (err.code === 'LIMIT_UNEXPECTED_FILE') {
           return res.status(400).json({
