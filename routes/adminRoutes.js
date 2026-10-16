@@ -21,6 +21,9 @@ router.delete('/products/:id', adminController.deleteProduct);
 
 // Order Pipeline
 router.get('/orders', adminController.getAllOrders);
+router.get('/orders/:id', adminController.getOrderById);
+router.patch('/orders/:id/mark-paid', adminController.markOrderPaid);
+router.patch('/orders/:id/cancel', adminController.cancelOrder);
 router.patch('/orders/:id/ship', adminController.shipOrder);
 router.patch('/orders/:id/arrive', adminController.arriveOrder);
 router.patch('/orders/:id/archive', adminController.archiveOrder);

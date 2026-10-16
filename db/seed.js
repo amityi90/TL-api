@@ -67,6 +67,13 @@ const seed = async () => {
   }
 
   const adminEmail = process.env.ADMIN_EMAIL || 'admin@tehilalevi.com';
+
+  // In production a missing ADMIN_PASSWORD must not quietly reset the live
+  // admin to a password printed in this file.
+  if (!process.env.ADMIN_PASSWORD && process.env.NODE_ENV === 'production') {
+    console.warn('ADMIN_PASSWORD is not set - leaving the admin user untouched.');
+    return;
+  }
   const adminPassword = process.env.ADMIN_PASSWORD || 'admin123';
   const hashed = await bcrypt.hash(adminPassword, await bcrypt.genSalt(10));
 

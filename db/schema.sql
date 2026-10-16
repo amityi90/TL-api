@@ -33,17 +33,19 @@ CREATE TABLE IF NOT EXISTS orders (
   address           TEXT NOT NULL,
   city              TEXT NOT NULL,
   postal_code       TEXT NOT NULL,
+  country           TEXT,
   phone             TEXT NOT NULL,
   email             TEXT,
   carrier           TEXT,
   tracking_number   TEXT,
   arrival_at        TIMESTAMPTZ,
-  payment_method    TEXT NOT NULL CHECK (payment_method IN ('Card','PayPal')),
+  payment_method    TEXT NOT NULL CHECK (payment_method IN ('Card','PayPal','Manual')),
   payment_status    TEXT NOT NULL DEFAULT 'Pending' CHECK (payment_status IN ('Pending','Paid')),
-  payment_intent_id TEXT,
+  payment_provider  TEXT,
+  payment_reference TEXT,
   total_amount      NUMERIC(10,2) NOT NULL,
   status            TEXT NOT NULL DEFAULT 'pending'
-                      CHECK (status IN ('pending','shipped','arrived','archived')),
+                      CHECK (status IN ('pending','shipped','arrived','archived','cancelled')),
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -53,6 +55,7 @@ CREATE TABLE IF NOT EXISTS order_items (
   id         SERIAL PRIMARY KEY,
   order_id   INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
   product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+  product_name TEXT,
   quantity   INTEGER NOT NULL CHECK (quantity >= 1),
   unit_price NUMERIC(10,2) NOT NULL
 );
@@ -87,3 +90,38 @@ CREATE INDEX IF NOT EXISTS order_items_order_id_idx ON order_items (order_id);
 CREATE INDEX IF NOT EXISTS site_content_section_idx ON site_content (section, sort_order);
 CREATE INDEX IF NOT EXISTS orders_status_created_at_idx ON orders (status, created_at DESC);
 CREATE INDEX IF NOT EXISTS products_category_idx ON products (category);
+
+-- ---------------------------------------------------------------------------
+-- Provider-neutral payments, cancellations and order detail.
+-- Every statement below is safe to re-run.
+-- ---------------------------------------------------------------------------
+
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS country TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_provider TEXT;
+
+-- Stripe is gone; the column now holds whatever reference the active payment
+-- provider hands back. Renamed in place so existing values are kept.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+              WHERE table_name = 'orders' AND column_name = 'payment_intent_id') THEN
+    ALTER TABLE orders RENAME COLUMN payment_intent_id TO payment_reference;
+  END IF;
+END $$;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_reference TEXT;
+
+ALTER TABLE orders DROP CONSTRAINT IF EXISTS orders_payment_method_check;
+ALTER TABLE orders ADD CONSTRAINT orders_payment_method_check
+  CHECK (payment_method IN ('Card','PayPal','Manual'));
+
+ALTER TABLE orders DROP CONSTRAINT IF EXISTS orders_status_check;
+ALTER TABLE orders ADD CONSTRAINT orders_status_check
+  CHECK (status IN ('pending','shipped','arrived','archived','cancelled'));
+
+-- Name snapshot, so an order still reads correctly after its product is deleted
+-- (product_id goes NULL on delete).
+ALTER TABLE order_items ADD COLUMN IF NOT EXISTS product_name TEXT;
+UPDATE order_items oi
+   SET product_name = p.name
+  FROM products p
+ WHERE oi.product_id = p.id AND oi.product_name IS NULL;

@@ -1,6 +1,8 @@
 const Joi = require('joi');
 const { query, withTransaction } = require('../db');
 const { ORDER_COLUMNS, ORDER_ITEMS_JSON } = require('../db/projections');
+const payments = require('../services/payments');
+const { sendOrderNotification } = require('../services/email');
 
 const orderValidationSchema = Joi.object({
   cartItems: Joi.array()
@@ -20,12 +22,16 @@ const orderValidationSchema = Joi.object({
     address: Joi.string().required(),
     city: Joi.string().required(),
     postalCode: Joi.string().required(),
+    // ISO 3166-1 alpha-2, from the storefront's country select.
+    country: Joi.string().trim().uppercase().length(2).optional(),
     phone: Joi.string().required(),
     email: Joi.string().email().optional()
   })
     .unknown(true)
     .required(),
-  paymentMethod: Joi.string().valid('Card', 'PayPal').required(),
+  // Accepted for backwards compatibility but ignored: the active payment
+  // provider decides the method, not the browser.
+  paymentMethod: Joi.string().optional(),
   total: Joi.number().optional()
 });
 
@@ -42,7 +48,8 @@ exports.createOrder = async (req, res, next) => {
 
     // The payment intent is created afterwards, from this order's own total -
     // which is why the browser never gets to say what the charge should be.
-    const { cartItems, shippingAddress, paymentMethod } = value;
+    const { cartItems, shippingAddress } = value;
+    const { paymentMethod } = payments.getProvider();
 
     const quantityByProductId = new Map();
     for (const item of cartItems) {
@@ -90,7 +97,8 @@ exports.createOrder = async (req, res, next) => {
       const lineItems = productIds.map((productId) => ({
         productId,
         quantity: quantityByProductId.get(productId),
-        unitPrice: productById.get(productId).price
+        unitPrice: productById.get(productId).price,
+        name: productById.get(productId).name
       }));
       const totalAmount = lineItems.reduce(
         (sum, line) => sum + line.unitPrice * line.quantity,
@@ -98,15 +106,16 @@ exports.createOrder = async (req, res, next) => {
       );
 
       const { rows: orderRows } = await client.query(
-        `INSERT INTO orders (full_name, address, city, postal_code, phone, email,
+        `INSERT INTO orders (full_name, address, city, postal_code, country, phone, email,
                              payment_method, total_amount)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          RETURNING id`,
         [
           shippingAddress.fullName,
           shippingAddress.address,
           shippingAddress.city,
           shippingAddress.postalCode,
+          shippingAddress.country || null,
           shippingAddress.phone,
           shippingAddress.email || null,
           paymentMethod,
@@ -117,9 +126,9 @@ exports.createOrder = async (req, res, next) => {
 
       for (const line of lineItems) {
         await client.query(
-          `INSERT INTO order_items (order_id, product_id, quantity, unit_price)
-           VALUES ($1, $2, $3, $4)`,
-          [orderId, line.productId, line.quantity, line.unitPrice]
+          `INSERT INTO order_items (order_id, product_id, product_name, quantity, unit_price)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [orderId, line.productId, line.name, line.quantity, line.unitPrice]
         );
         // The CHECK (stock_count >= 0) constraint is the last line of defence:
         // even if the FOR UPDATE check were bypassed, stock cannot go negative.
@@ -136,28 +145,15 @@ exports.createOrder = async (req, res, next) => {
       return { status: 201, body: { success: true, data: rows[0] } };
     });
 
+    // After the commit, so the order is already safe: sendOrderNotification
+    // never throws and logs its own failures. Awaited rather than fired after
+    // the response because Cloud Run throttles CPU once a response is sent,
+    // which can leave a background request hanging.
+    if (result.status === 201) {
+      await sendOrderNotification(result.body.data);
+    }
+
     res.status(result.status).json(result.body);
-  } catch (error) {
-    next(error);
-  }
-};
-
-exports.getOrderById = async (req, res, next) => {
-  try {
-    const id = Number(req.params.id);
-    if (!Number.isInteger(id)) {
-      return res.status(400).json({ success: false, message: 'Invalid order id' });
-    }
-
-    const { rows } = await query(
-      `SELECT ${ORDER_COLUMNS}, ${ORDER_ITEMS_JSON} FROM orders o WHERE o.id = $1`,
-      [id]
-    );
-    if (rows.length === 0) {
-      return res.status(404).json({ success: false, message: 'Order not found' });
-    }
-
-    res.status(200).json({ success: true, data: rows[0] });
   } catch (error) {
     next(error);
   }

@@ -3,7 +3,6 @@ const express = require('express');
 const cors = require('cors');
 const { initPool, closePool } = require('./db');
 const productRoutes = require('./routes/productRoutes');
-const cartRoutes = require('./routes/cartRoutes');
 const orderRoutes = require('./routes/orderRoutes');
 const contactRoutes = require('./routes/contactRoutes');
 const contentRoutes = require('./routes/contentRoutes');
@@ -14,6 +13,10 @@ const authRoutes = require('./routes/authRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+// Cloud Run sits behind one Google front end. Trusting that single hop makes
+// req.ip the real client address, which the contact-form rate limit keys on.
+app.set('trust proxy', 1);
 
 // Fail at boot rather than issuing forgeable tokens. Both authController and
 // adminAuth used to fall back to the literal 'your_jwt_secret'.
@@ -42,10 +45,10 @@ app.use(
     }
   })
 );
-// MUST come before express.json(). Stripe signs the raw bytes, and the JSON
-// parser replaces them with a parsed object, so verification would always fail.
+// MUST come before express.json(). Payment providers sign the raw bytes, and the
+// JSON parser replaces them with a parsed object, so verification would fail.
 app.post(
-  '/api/payments/webhook',
+  '/api/payments/webhook/:provider',
   express.raw({ type: 'application/json' }),
   paymentController.handleWebhook
 );
@@ -55,7 +58,6 @@ app.use(express.json({ limit: '100kb' }));
 app.get('/health', (req, res) => res.status(200).json({ status: 'ok' }));
 
 app.use('/api/products', productRoutes);
-app.use('/api/cart', cartRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/contact', contactRoutes);
 app.use('/api/content', contentRoutes);
@@ -71,7 +73,7 @@ app.use((req, res) => {
 app.use((err, req, res, next) => {
   console.error(err.stack);
   const status = err.status || err.statusCode || 500;
-  // Don't echo internal driver/Stripe messages to clients in production.
+  // Don't echo internal driver/provider messages to clients in production.
   const message =
     status >= 500 && process.env.NODE_ENV === 'production'
       ? 'Internal Server Error'

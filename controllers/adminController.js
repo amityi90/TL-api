@@ -331,12 +331,25 @@ exports.deleteProduct = async (req, res, next) => {
 
 // --- Order Pipeline ---
 
+const ORDER_STATUSES = ['pending', 'shipped', 'arrived', 'archived', 'cancelled'];
+
+const fetchOrder = async (db, id) => {
+  const { rows } = await db.query(
+    `SELECT ${ORDER_COLUMNS}, ${ORDER_ITEMS_JSON} FROM orders o WHERE o.id = $1`,
+    [id]
+  );
+  return rows[0] || null;
+};
+
 exports.getAllOrders = async (req, res, next) => {
   try {
     const { status } = req.query;
     const params = [];
     let where = '';
     if (status) {
+      if (!ORDER_STATUSES.includes(status)) {
+        return res.status(400).json({ success: false, message: 'Invalid status filter' });
+      }
       params.push(status);
       where = `WHERE o.status = $${params.length}`;
     }
@@ -354,9 +367,48 @@ exports.getAllOrders = async (req, res, next) => {
   }
 };
 
+exports.getOrderById = async (req, res, next) => {
+  try {
+    const id = parseId(req.params.id);
+    if (id === null) {
+      return res.status(400).json({ success: false, message: 'Invalid order id' });
+    }
+    const order = await fetchOrder({ query }, id);
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+    res.status(200).json({ success: true, data: order });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Explains why a guarded UPDATE matched no row: missing order, wrong status,
+// or (for shipping) not yet paid.
+const rejectTransition = async (res, id, to, requirePaid) => {
+  const { rows: existing } = await query('SELECT status, payment_status FROM orders WHERE id = $1', [
+    id
+  ]);
+  if (existing.length === 0) {
+    return res.status(404).json({ success: false, message: 'Order not found' });
+  }
+  if (requirePaid && existing[0].payment_status !== 'Paid') {
+    return res.status(409).json({ success: false, message: 'Order is not paid yet' });
+  }
+  return res.status(409).json({
+    success: false,
+    message: `Cannot move order from '${existing[0].status}' to '${to}'`
+  });
+};
+
 // Each transition asserts the current state in the WHERE clause, so an order
 // cannot jump backwards (archived -> shipped) the way it could before.
-const transition = async (req, res, next, { from, to, extraColumns = {}, validate }) => {
+const transition = async (
+  req,
+  res,
+  next,
+  { from, to, extraColumns = {}, validate, requirePaid = false }
+) => {
   try {
     const id = parseId(req.params.id);
     if (id === null) {
@@ -384,26 +436,16 @@ const transition = async (req, res, next, { from, to, extraColumns = {}, validat
     const { rows } = await query(
       `UPDATE orders SET ${assignments.join(', ')}
         WHERE id = $${params.length - 1} AND status = $${params.length}
+          ${requirePaid ? "AND payment_status = 'Paid'" : ''}
         RETURNING id`,
       params
     );
 
     if (rows.length === 0) {
-      const { rows: existing } = await query('SELECT status FROM orders WHERE id = $1', [id]);
-      if (existing.length === 0) {
-        return res.status(404).json({ success: false, message: 'Order not found' });
-      }
-      return res.status(409).json({
-        success: false,
-        message: `Cannot move order from '${existing[0].status}' to '${to}'`
-      });
+      return rejectTransition(res, id, to, requirePaid);
     }
 
-    const { rows: full } = await query(
-      `SELECT ${ORDER_COLUMNS}, ${ORDER_ITEMS_JSON} FROM orders o WHERE o.id = $1`,
-      [id]
-    );
-    res.status(200).json({ success: true, data: full[0] });
+    res.status(200).json({ success: true, data: await fetchOrder({ query }, id) });
   } catch (error) {
     next(error);
   }
@@ -414,6 +456,8 @@ exports.shipOrder = (req, res, next) => {
   return transition(req, res, next, {
     from: 'pending',
     to: 'shipped',
+    // Nothing leaves the boutique before it is paid for.
+    requirePaid: true,
     extraColumns: { carrier, tracking_number: trackingNumber },
     validate: () =>
       !carrier || !trackingNumber ? 'carrier and trackingNumber are required' : null
@@ -439,3 +483,69 @@ exports.arriveOrder = (req, res, next) => {
 
 exports.archiveOrder = (req, res, next) =>
   transition(req, res, next, { from: 'arrived', to: 'archived' });
+
+// Payment is arranged by hand while the shop uses the manual provider, so the
+// admin records it here. Idempotent, and refused for cancelled orders.
+exports.markOrderPaid = async (req, res, next) => {
+  try {
+    const id = parseId(req.params.id);
+    if (id === null) {
+      return res.status(400).json({ success: false, message: 'Invalid order id' });
+    }
+
+    const { rows } = await query(
+      `UPDATE orders
+          SET payment_status = 'Paid',
+              payment_provider = COALESCE(payment_provider, 'manual')
+        WHERE id = $1 AND status <> 'cancelled'
+        RETURNING id`,
+      [id]
+    );
+    if (rows.length === 0) {
+      return rejectTransition(res, id, 'paid', false);
+    }
+
+    res.status(200).json({ success: true, data: await fetchOrder({ query }, id) });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Pending -> cancelled, returning the reserved stock in the same transaction.
+// Stock is taken when the order is placed, so without this an abandoned order
+// would hold its pieces off the shelf forever.
+exports.cancelOrder = async (req, res, next) => {
+  try {
+    const id = parseId(req.params.id);
+    if (id === null) {
+      return res.status(400).json({ success: false, message: 'Invalid order id' });
+    }
+
+    const order = await withTransaction(async (client) => {
+      const { rows } = await client.query(
+        `UPDATE orders SET status = 'cancelled'
+          WHERE id = $1 AND status = 'pending'
+          RETURNING id`,
+        [id]
+      );
+      if (rows.length === 0) return null;
+
+      // product_id is NULL for products deleted since; nothing to restock.
+      await client.query(
+        `UPDATE products p
+            SET stock_count = p.stock_count + oi.quantity
+           FROM order_items oi
+          WHERE oi.order_id = $1 AND oi.product_id = p.id`,
+        [id]
+      );
+      return fetchOrder(client, id);
+    });
+
+    if (!order) {
+      return rejectTransition(res, id, 'cancelled', false);
+    }
+    res.status(200).json({ success: true, data: order });
+  } catch (error) {
+    next(error);
+  }
+};

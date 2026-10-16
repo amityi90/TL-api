@@ -19,6 +19,7 @@ const ORDER_COLUMNS = `
   o.address,
   o.city,
   o.postal_code       AS "postalCode",
+  o.country,
   o.phone,
   o.email,
   o.carrier,
@@ -26,7 +27,8 @@ const ORDER_COLUMNS = `
   o.arrival_at        AS "arrivalAt",
   o.payment_method    AS "paymentMethod",
   o.payment_status    AS "paymentStatus",
-  o.payment_intent_id AS "paymentIntentId",
+  o.payment_provider  AS "paymentProvider",
+  o.payment_reference AS "paymentReference",
   o.total_amount      AS "totalAmount",
   o.status,
   o.created_at        AS "createdAt"
@@ -43,7 +45,7 @@ const ORDER_ITEMS_JSON = `
                  'productId', oi.product_id,
                  'quantity', oi.quantity,
                  'unitPrice', oi.unit_price,
-                 'name', p.name,
+                 'name', COALESCE(oi.product_name, p.name),
                  'images', p.images
                ) ORDER BY oi.id
              )
