@@ -10,6 +10,7 @@ const paymentRoutes = require('./routes/paymentRoutes');
 const paymentController = require('./controllers/paymentController');
 const adminRoutes = require('./routes/adminRoutes');
 const authRoutes = require('./routes/authRoutes');
+const shippingRoutes = require('./routes/shippingRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -64,6 +65,14 @@ app.use('/api/content', contentRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/auth', authRoutes);
+app.use('/api/shipping', shippingRoutes);
+
+// Static rates engine speaking Easyship's API, which services/shipping/client.js
+// reaches over HTTP through EASYSHIP_BASE_URL. Going live with Easyship means
+// pointing that variable at public-api.easyship.com and turning this off.
+if (process.env.SHIPPING_MOCK_ENABLED === 'true') {
+  app.use('/mock/easyship', require('./services/shipping/mock/router'));
+}
 
 app.use((req, res) => {
   res.status(404).json({ success: false, message: 'Not found' });

@@ -2,38 +2,36 @@ const Joi = require('joi');
 const { query, withTransaction } = require('../db');
 const { ORDER_COLUMNS, ORDER_ITEMS_JSON } = require('../db/projections');
 const payments = require('../services/payments');
+const shippingService = require('../services/shipping');
+const quotes = require('../services/shipping/quotes');
 const { sendOrderNotification } = require('../services/email');
+const { cartItemsSchema, shippingAddressSchema, mergeCart } = require('../validation/checkout');
 
 const orderValidationSchema = Joi.object({
-  cartItems: Joi.array()
-    .items(
-      Joi.object({
-        id: Joi.alternatives(Joi.number().integer(), Joi.string()).optional(),
-        _id: Joi.alternatives(Joi.number().integer(), Joi.string()).optional(),
-        quantity: Joi.number().integer().min(1).required()
-      })
-        .unknown(true)
-        .or('id', '_id')
-    )
-    .required()
-    .min(1),
-  shippingAddress: Joi.object({
-    fullName: Joi.string().required(),
-    address: Joi.string().required(),
-    city: Joi.string().required(),
-    postalCode: Joi.string().required(),
-    // ISO 3166-1 alpha-2, from the storefront's country select.
-    country: Joi.string().trim().uppercase().length(2).optional(),
-    phone: Joi.string().required(),
-    email: Joi.string().email().optional()
-  })
-    .unknown(true)
-    .required(),
+  cartItems: cartItemsSchema,
+  shippingAddress: shippingAddressSchema,
+  // The customer's pick from POST /api/shipping/rates. Only ids: the price is
+  // read from the stored quote, never from the browser.
+  shipping: Joi.object({
+    quoteId: Joi.string().guid().required(),
+    rateId: Joi.string().max(200).required()
+  }).optional(),
   // Accepted for backwards compatibility but ignored: the active payment
   // provider decides the method, not the browser.
   paymentMethod: Joi.string().optional(),
   total: Joi.number().optional()
 });
+
+// The storefront watches for this code and re-quotes instead of just showing
+// an error, since the usual cause is a quote that timed out.
+const shippingQuoteInvalid = {
+  status: 400,
+  body: {
+    success: false,
+    code: 'SHIPPING_QUOTE_INVALID',
+    message: 'Shipping options have expired or changed. Please choose a shipping method again.'
+  }
+};
 
 exports.createOrder = async (req, res, next) => {
   try {
@@ -51,17 +49,14 @@ exports.createOrder = async (req, res, next) => {
     const { cartItems, shippingAddress } = value;
     const { paymentMethod } = payments.getProvider();
 
-    const quantityByProductId = new Map();
-    for (const item of cartItems) {
-      const productId = Number(item.id ?? item._id);
-      if (!Number.isInteger(productId)) {
-        return res.status(400).json({ success: false, message: 'Invalid product ID in cart' });
-      }
-      // Same product listed twice: sum rather than let the later line win.
-      quantityByProductId.set(
-        productId,
-        (quantityByProductId.get(productId) || 0) + item.quantity
-      );
+    // Same product listed twice: summed rather than letting the later line win.
+    const quantityByProductId = mergeCart(cartItems);
+    if (!quantityByProductId) {
+      return res.status(400).json({ success: false, message: 'Invalid product ID in cart' });
+    }
+
+    if (shippingService.isEnabled() && !value.shipping) {
+      return res.status(400).json({ success: false, message: 'Please choose a shipping method.' });
     }
 
     // Ascending id order gives every concurrent order the same lock sequence,
@@ -94,32 +89,59 @@ exports.createOrder = async (req, res, next) => {
         }
       }
 
+      // With shipping off, a quote the storefront still sends is ignored and
+      // shipping stays free - exactly the behaviour before shipping existed.
+      let shipping = { amount: 0, carrier: null, service: null, rateRef: null, estDuties: null };
+      if (shippingService.isEnabled()) {
+        const rate = await quotes.resolveRate(client, {
+          quoteId: value.shipping.quoteId,
+          rateId: value.shipping.rateId,
+          fingerprint: quotes.fingerprint(shippingAddress, quantityByProductId)
+        });
+        if (!rate) return shippingQuoteInvalid;
+        shipping = {
+          amount: rate.amount,
+          carrier: rate.carrier,
+          service: rate.service,
+          rateRef: rate.id,
+          estDuties: rate.estDuties
+        };
+      }
+
       const lineItems = productIds.map((productId) => ({
         productId,
         quantity: quantityByProductId.get(productId),
         unitPrice: productById.get(productId).price,
         name: productById.get(productId).name
       }));
-      const totalAmount = lineItems.reduce(
+      const itemsTotal = lineItems.reduce(
         (sum, line) => sum + line.unitPrice * line.quantity,
         0
       );
+      const totalAmount = Math.round((itemsTotal + shipping.amount) * 100) / 100;
 
       const { rows: orderRows } = await client.query(
-        `INSERT INTO orders (full_name, address, city, postal_code, country, phone, email,
-                             payment_method, total_amount)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        `INSERT INTO orders (full_name, address, city, state, postal_code, country, phone, email,
+                             payment_method, total_amount, shipping_amount, shipping_carrier,
+                             shipping_service, shipping_rate_ref, shipping_est_duties)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
          RETURNING id`,
         [
           shippingAddress.fullName,
           shippingAddress.address,
           shippingAddress.city,
+          shippingAddress.state || null,
           shippingAddress.postalCode,
           shippingAddress.country || null,
           shippingAddress.phone,
           shippingAddress.email || null,
           paymentMethod,
-          totalAmount
+          totalAmount,
+          shipping.amount,
+          shipping.carrier,
+          shipping.service,
+          shipping.rateRef,
+          shipping.estDuties
         ]
       );
       const orderId = orderRows[0].id;

@@ -125,3 +125,31 @@ UPDATE order_items oi
    SET product_name = p.name
   FROM products p
  WHERE oi.product_id = p.id AND oi.product_name IS NULL;
+
+-- ---------------------------------------------------------------------------
+-- Shipping rates at checkout. Every statement below is safe to re-run.
+-- ---------------------------------------------------------------------------
+
+-- State / province, which couriers require for US, CA, MX and AU.
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS state TEXT;
+
+-- total_amount = items + shipping_amount. The rest is a snapshot of the rate
+-- the customer picked, so the admin books the courier that was paid for.
+-- shipping_rate_ref is the provider's service id, kept for buying labels later.
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_amount NUMERIC(10,2) NOT NULL DEFAULT 0;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_carrier TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_service TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_rate_ref TEXT;
+-- Estimated import tax + duty the recipient pays on delivery. Shown, never charged.
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_est_duties NUMERIC(10,2);
+
+-- Rates quoted to a shopper, held server-side so an order can only use a price
+-- we issued. fingerprint binds a quote to one address and one cart.
+CREATE TABLE IF NOT EXISTS shipping_quotes (
+  id          UUID PRIMARY KEY,
+  fingerprint TEXT NOT NULL,
+  rates       JSONB NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at  TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS shipping_quotes_expires_at_idx ON shipping_quotes (expires_at);

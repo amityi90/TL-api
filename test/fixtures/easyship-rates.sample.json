@@ -1,0 +1,33 @@
+{
+  "rates": [
+    {
+      "courier_service": {
+        "id": "01563646-58c1-4607-8fe0-cae3e33c0001",
+        "name": "Express Worldwide",
+        "umbrella_name": "DHL",
+        "courier_id": "01563646-58c1-4607-8fe0-cae3e33c0002"
+      },
+      "currency": "USD",
+      "shipment_charge": 52.4,
+      "fuel_surcharge": 9.43,
+      "shipment_charge_total": 61.83,
+      "total_charge": 61.83,
+      "min_delivery_time": 2,
+      "max_delivery_time": 4,
+      "incoterms": "DDU",
+      "estimated_import_tax": 81.25,
+      "estimated_import_duty": 0,
+      "import_tax_charge": 0,
+      "import_duty_charge": 0,
+      "is_above_threshold": true,
+      "is_above_duty_threshold": false,
+      "description": "DHL Express Worldwide",
+      "full_description": "DHL Express Worldwide (2-4 working days)",
+      "rates_in_origin_currency": null
+    }
+  ],
+  "meta": {
+    "pagination": { "page": 1, "next": null, "count": 1 },
+    "request_id": "8a3f6b2e-1c4d-4e5f-9a0b-1c2d3e4f5a6b"
+  }
+}

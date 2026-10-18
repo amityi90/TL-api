@@ -18,6 +18,7 @@ const ORDER_COLUMNS = `
   o.full_name         AS "fullName",
   o.address,
   o.city,
+  o.state,
   o.postal_code       AS "postalCode",
   o.country,
   o.phone,
@@ -30,6 +31,10 @@ const ORDER_COLUMNS = `
   o.payment_provider  AS "paymentProvider",
   o.payment_reference AS "paymentReference",
   o.total_amount      AS "totalAmount",
+  o.shipping_amount     AS "shippingAmount",
+  o.shipping_carrier    AS "shippingCarrier",
+  o.shipping_service    AS "shippingService",
+  o.shipping_est_duties AS "shippingEstDuties",
   o.status,
   o.created_at        AS "createdAt"
 `;

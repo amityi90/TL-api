@@ -103,9 +103,13 @@ const sendOrderNotification = (order) => {
   });
   const addressLines = [
     order.address,
-    [order.city, order.postalCode].filter(Boolean).join(' '),
+    [order.city, order.state, order.postalCode].filter(Boolean).join(' '),
     order.country
   ].filter(Boolean);
+  const shippingAmount = Number(order.shippingAmount) || 0;
+  const subtotal = Number(order.totalAmount) - shippingAmount;
+  const shippingLabel =
+    [order.shippingCarrier, order.shippingService].filter(Boolean).join(' - ') || 'Shipping';
   const itemName = (item) =>
     item.name || (item.productId ? `Product #${item.productId}` : 'Deleted product');
 
@@ -147,6 +151,14 @@ const sendOrderNotification = (order) => {
       </tr>
       ${itemRows}
       <tr>
+        <td colspan="3" style="padding:12px 8px 0 0;text-align:right;color:#777">Subtotal</td>
+        <td style="padding:12px 0 0;text-align:right">${formatUSD(subtotal)}</td>
+      </tr>
+      <tr>
+        <td colspan="3" style="padding:4px 8px 0 0;text-align:right;color:#777">${escapeHtml(shippingLabel)}</td>
+        <td style="padding:4px 0 0;text-align:right">${formatUSD(shippingAmount)}</td>
+      </tr>
+      <tr>
         <td colspan="3" style="padding:12px 8px 0 0;text-align:right"><strong>Total</strong></td>
         <td style="padding:12px 0 0;text-align:right"><strong>${formatUSD(order.totalAmount)}</strong></td>
       </tr>
@@ -175,6 +187,8 @@ const sendOrderNotification = (order) => {
         `  ${item.quantity} x ${itemName(item)} @ ${formatUSD(item.unitPrice)} = ${formatUSD(item.unitPrice * item.quantity)}`
     ),
     '',
+    `Subtotal: ${formatUSD(subtotal)}`,
+    `${shippingLabel}: ${formatUSD(shippingAmount)}`,
     `Total: ${formatUSD(order.totalAmount)}`
   ].join('\n');
 
